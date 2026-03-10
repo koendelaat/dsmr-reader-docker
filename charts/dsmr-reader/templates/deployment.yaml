@@ -1,0 +1,157 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "dsmr-reader.fullname" . }}
+  labels:
+    {{- include "dsmr-reader.labels" . | nindent 4 }}
+spec:
+  # DSMR Reader is a stateful single-instance application.
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "dsmr-reader.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "dsmr-reader.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.serviceAccount.create }}
+      serviceAccountName: {{ include "dsmr-reader.serviceAccountName" . }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 80
+              protocol: TCP
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          env:
+            # ── Identity ─────────────────────────────────────────────
+            - name: PUID
+              value: {{ .Values.dsmr.puid | quote }}
+            - name: PGID
+              value: {{ .Values.dsmr.pgid | quote }}
+
+            # ── Django / DSMR Reader runtime ─────────────────────────
+            - name: CONTAINER_RUN_MODE
+              value: {{ .Values.dsmr.containerRunMode | quote }}
+            - name: CONTAINER_ENABLE_DEBUG
+              value: {{ .Values.dsmr.enableDebug | quote }}
+            - name: CONTAINER_ENABLE_VACUUM_DB_AT_STARTUP
+              value: {{ .Values.dsmr.enableVacuumDbAtStartup | quote }}
+            - name: DJANGO_TIME_ZONE
+              value: {{ .Values.dsmr.timeZone | quote }}
+            - name: DJANGO_ALLOWED_HOSTS
+              value: {{ .Values.dsmr.djangoAllowedHosts | quote }}
+            {{- if .Values.dsmr.djangoCsrfTrustedOrigins }}
+            - name: DJANGO_CSRF_TRUSTED_ORIGINS
+              value: {{ .Values.dsmr.djangoCsrfTrustedOrigins | quote }}
+            {{- end }}
+
+            # ── Admin credentials (from Secret) ───────────────────────
+            - name: DSMRREADER_ADMIN_USER
+              value: {{ .Values.dsmr.adminUser | quote }}
+            - name: DSMRREADER_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "dsmr-reader.credentialsSecretName" . }}
+                  key: {{ .Values.dsmr.credentials.adminPasswordKey }}
+            - name: DJANGO_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "dsmr-reader.credentialsSecretName" . }}
+                  key: {{ .Values.dsmr.credentials.djangoSecretKeyKey }}
+
+            # ── Database connection ───────────────────────────────────
+            - name: DJANGO_DATABASE_HOST
+              value: {{ include "dsmr-reader.databaseHost" . | quote }}
+            - name: DJANGO_DATABASE_PORT
+              value: {{ include "dsmr-reader.databasePort" . | quote }}
+            - name: DJANGO_DATABASE_NAME
+              value: {{ include "dsmr-reader.databaseName" . | quote }}
+            - name: DJANGO_DATABASE_USER
+              value: {{ include "dsmr-reader.databaseUser" . | quote }}
+            - name: DJANGO_DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "dsmr-reader.databaseSecretName" . }}
+                  key: {{ include "dsmr-reader.databaseSecretPasswordKey" . }}
+
+            # ── Remote / P1 input ─────────────────────────────────────
+            # Always set SERIAL_DEVICE explicitly so the app never falls back to
+            # its built-in default of /dev/ttyUSB0 when no device is configured.
+            - name: DSMRREADER_REMOTE_DATALOGGER_SERIAL_DEVICE
+              value: {{ if eq .Values.dsmr.remoteInput.inputMethod "serial" }}{{ required "dsmr.remoteInput.serial.device is required when inputMethod is serial" .Values.dsmr.remoteInput.serial.device | quote }}{{ else }}""{{ end }}
+            {{- if .Values.dsmr.remoteInput.inputMethod }}
+            - name: DSMRREADER_REMOTE_DATALOGGER_INPUT_METHOD
+              value: {{ .Values.dsmr.remoteInput.inputMethod | quote }}
+            {{- if eq .Values.dsmr.remoteInput.inputMethod "serial" }}
+            - name: DSMRREADER_REMOTE_DATALOGGER_SERIAL_BAUDRATE
+              value: {{ .Values.dsmr.remoteInput.serial.baudRate | quote }}
+            - name: DSMRREADER_REMOTE_DATALOGGER_SERIAL_BYTESIZE
+              value: {{ .Values.dsmr.remoteInput.serial.byteSize | quote }}
+            {{- else if eq .Values.dsmr.remoteInput.inputMethod "ipv4" }}
+            - name: DSMRREADER_REMOTE_DATALOGGER_NETWORK_HOST
+              value: {{ required "dsmr.remoteInput.network.host is required when inputMethod is ipv4" .Values.dsmr.remoteInput.network.host | quote }}
+            - name: DSMRREADER_REMOTE_DATALOGGER_NETWORK_PORT
+              value: {{ .Values.dsmr.remoteInput.network.port | quote }}
+            {{- end }}
+            {{- end }}
+
+          volumeMounts:
+            {{- if .Values.persistence.enabled }}
+            - name: backups
+              mountPath: {{ .Values.persistence.mountPath }}
+            {{- end }}
+            {{- if and (eq .Values.dsmr.remoteInput.inputMethod "serial") .Values.dsmr.remoteInput.serial.device }}
+            - name: serial-device
+              mountPath: {{ .Values.dsmr.remoteInput.serial.device }}
+            {{- end }}
+
+      volumes:
+        {{- if .Values.persistence.enabled }}
+        - name: backups
+          persistentVolumeClaim:
+            claimName: {{ include "dsmr-reader.pvcName" . }}
+        {{- end }}
+        {{- if and (eq .Values.dsmr.remoteInput.inputMethod "serial") .Values.dsmr.remoteInput.serial.device }}
+        - name: serial-device
+          hostPath:
+            path: {{ .Values.dsmr.remoteInput.serial.device }}
+            type: CharDevice
+        {{- end }}
+
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

@@ -1,0 +1,15 @@
+apiVersion: v2
+name: dsmr-reader
+description: Helm chart for DSMR Reader – a Dutch Smart Meter Requirements data logger and visualisation tool.
+
+type: application
+
+version: 0.1.0
+
+appVersion: "6.0.2"
+
+dependencies:
+  - name: postgresql
+    version: "16.7.27"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: postgresql.enabled

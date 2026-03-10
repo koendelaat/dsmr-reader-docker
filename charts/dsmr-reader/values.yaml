@@ -1,0 +1,267 @@
+# --------------------------------------------------------------------
+# DSMR Reader – Helm chart values
+# --------------------------------------------------------------------
+
+# -- Number of replicas. DSMR Reader is a single-instance application;
+#    do NOT set this above 1.
+replicaCount: 1
+
+image:
+  repository: ghcr.io/xirixiz/dsmr-reader-docker
+  pullPolicy: IfNotPresent
+  # Overrides the image tag whose default is the chart appVersion.
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# --------------------------------------------------------------------
+# DSMR Reader application configuration
+# --------------------------------------------------------------------
+dsmr:
+  # -- Container run mode. One of: standalone, datalogger, webinterface, api_server
+  containerRunMode: standalone
+
+  # -- Enable verbose debug logging inside the container (sets CONTAINER_ENABLE_DEBUG=true).
+  #    Do not leave this enabled in production.
+  enableDebug: false
+
+  # -- Run a database VACUUM on startup to reclaim space
+  enableVacuumDbAtStartup: true
+
+  # -- Timezone used by Django / DSMR Reader
+  timeZone: Europe/Amsterdam
+
+  # -- Comma-separated list of trusted origins for CSRF protection
+  djangoCsrfTrustedOrigins: ""
+
+  # -- Comma-separated list of allowed hosts (Django ALLOWED_HOSTS)
+  djangoAllowedHosts: "*"
+
+  # -- Admin user that is created/updated on startup
+  adminUser: admin
+
+  # -- Host UID / GID to map into the container
+  puid: 1000
+  pgid: 1000
+
+  # -- Credentials and secret key.
+  #    For GitOps workflows these values should come from an external
+  #    secret manager (e.g. ExternalSecrets / Sealed Secrets).
+  #    All three values MUST be set – the chart does NOT auto-generate them.
+  credentials:
+    # -- Name of an *existing* Secret that holds the credentials.
+    #    When set, the chart will read from this secret instead of
+    #    creating one from the inline values below.
+    existingSecret: ""
+
+    # -- Key inside the secret that holds DSMRREADER_ADMIN_PASSWORD
+    adminPasswordKey: adminPassword
+    # -- Key inside the secret that holds DJANGO_SECRET_KEY
+    djangoSecretKeyKey: djangoSecretKey
+
+    # -- Inline values – used only when existingSecret is empty.
+    #    Store these in a values-secret.yaml and keep it out of git!
+    adminPassword: ""
+    djangoSecretKey: ""
+
+
+  # -- Remote / P1 input configuration.
+  #    Configures how the datalogger reads telegrams from the smart meter.
+  #    Leave inputMethod empty to disable remote input entirely (no serial port
+  #    will be opened and no network connection will be attempted).
+  #
+  #    Serial example:
+  #      remoteInput:
+  #        inputMethod: serial
+  #        serial:
+  #          device: /dev/ttyUSB0
+  #          baudRate: "115200"
+  #          byteSize: "8"
+  #
+  #    Network / Wi-Fi P1 dongle example:
+  #      remoteInput:
+  #        inputMethod: ipv4
+  #        network:
+  #          host: 192.168.1.42
+  #          port: "23"
+  remoteInput:
+    # -- One of: serial, ipv4 – or empty to disable remote input.
+    inputMethod: ""
+
+    # -- Serial (USB/TTY) P1 dongle settings.
+    #    Only used when inputMethod is "serial".
+    serial:
+      # -- Host device path to mount into the container. Example: /dev/ttyUSB0
+      device: ""
+      # -- Baud rate. Common values: 115200 (DSMR 5), 9600 (DSMR 2/3/4)
+      baudRate: "115200"
+      # -- Byte size (data bits).
+      byteSize: "8"
+
+    # -- Network / Wi-Fi P1 dongle settings (e.g. P1 Dongle Plus, Homewizard).
+    #    Only used when inputMethod is "ipv4".
+    network:
+      # -- Hostname or IP address of the network P1 dongle.
+      host: ""
+      # -- TCP port of the network P1 dongle.
+      port: "23"
+
+# --------------------------------------------------------------------
+# Persistence – backup volume
+# --------------------------------------------------------------------
+persistence:
+  enabled: true
+  # -- Use an existing PVC instead of creating one
+  existingClaim: ""
+  storageClass: ""
+  accessMode: ReadWriteOnce
+  size: 1Gi
+  # -- Mount path inside the container
+  mountPath: /app/backups
+
+# --------------------------------------------------------------------
+# Service
+# --------------------------------------------------------------------
+service:
+  type: ClusterIP
+  # HTTP port exposed by the DSMR Reader nginx inside the container
+  port: 80
+
+# --------------------------------------------------------------------
+# Ingress
+# --------------------------------------------------------------------
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+    # kubernetes.io/ingress.class: nginx
+    # cert-manager.io/cluster-issuer: letsencrypt-prod
+  hosts:
+    - host: dsmr.example.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #  - secretName: dsmr-tls
+  #    hosts:
+  #      - dsmr.example.local
+
+# --------------------------------------------------------------------
+# Resources
+# --------------------------------------------------------------------
+resources: {}
+  # limits:
+  #   cpu: 500m
+  #   memory: 512Mi
+  # requests:
+  #   cpu: 100m
+  #   memory: 256Mi
+
+# --------------------------------------------------------------------
+# Probes
+# --------------------------------------------------------------------
+livenessProbe:
+  httpGet:
+    path: /
+    port: http
+  initialDelaySeconds: 30
+  periodSeconds: 30
+  timeoutSeconds: 5
+  failureThreshold: 6
+
+readinessProbe:
+  httpGet:
+    path: /
+    port: http
+  initialDelaySeconds: 20
+  periodSeconds: 15
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+# --------------------------------------------------------------------
+# Security context
+# --------------------------------------------------------------------
+podSecurityContext: {}
+  # fsGroup: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+
+# --------------------------------------------------------------------
+# Scheduling
+# --------------------------------------------------------------------
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+podAnnotations: {}
+podLabels: {}
+
+# --------------------------------------------------------------------
+# Service account
+# --------------------------------------------------------------------
+serviceAccount:
+  # DSMR Reader does not need Kubernetes API access; disable by default.
+  create: false
+  automount: false
+  annotations: {}
+  name: ""
+
+# --------------------------------------------------------------------
+# PostgreSQL (Bitnami subchart)
+# https://github.com/bitnami/charts/tree/main/bitnami/postgresql
+# Subchart version: 16.7.27
+# --------------------------------------------------------------------
+postgresql:
+  # -- Enable the bundled PostgreSQL subchart.
+  #    Set to false to use an external database and configure
+  #    externalDatabase below.
+  enabled: true
+
+  image:
+    # -- Bitnami no longer publishes new images to docker.io/bitnami; legacy
+    #    chart versions (16.x / PostgreSQL 17) must use docker.io/bitnamilegacy.
+    registry: docker.io
+    repository: bitnamilegacy/postgresql
+
+  auth:
+    database: dsmrreader
+    username: dsmrreader
+    # -- Password for the dsmrreader database user.
+    #    For GitOps workflows supply this via an external secret and
+    #    reference it with auth.existingSecret + auth.secretKeys.
+    password: ""
+    # -- Password for the postgres admin user.
+    postgresPassword: ""
+    # -- Name of an existing secret containing the passwords.
+    #    The secret must contain the keys defined in auth.secretKeys.
+    existingSecret: ""
+    # -- Key names inside the Secret created by the bitnami/postgresql subchart.
+    #    The bitnami/postgresql 16.x auto-created Secret uses "password" for the
+    #    user password key. These secretKeys values are only relevant when
+    #    auth.existingSecret is set.
+    secretKeys:
+      adminPasswordKey: postgres-password
+      userPasswordKey: password
+
+  primary:
+    persistence:
+      enabled: true
+      size: 8Gi
+
+# --------------------------------------------------------------------
+# External database – used when postgresql.enabled is false
+# --------------------------------------------------------------------
+externalDatabase:
+  host: ""
+  port: 5432
+  name: dsmrreader
+  username: dsmrreader
+  # -- Plain-text password (not recommended; prefer existingSecret)
+  password: ""
+  # -- Name of an existing Secret with key defined in existingSecretPasswordKey
+  existingSecret: ""
+  existingSecretPasswordKey: password
+
